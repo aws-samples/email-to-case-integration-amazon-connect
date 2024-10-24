@@ -1,0 +1,257 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Email channel for Amazon Connect.
+
+Globals:
+  Function:
+    Timeout: 60
+    MemorySize: 256
+    Runtime: python3.9
+
+Parameters:
+  ConnectInstanceId:
+    Type: String
+    AllowedPattern: "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+    Description: Amazon Connect Instance Id.
+  CasesDomain:
+    Type: String
+    Description: Amazon Connect cases domain Id.
+  CaseTemplate:
+    Type: String
+    Description: Amazon Connect case template Id.
+  CustomerProfilesDomain:
+    Type: String
+    Description: Amazon Connect Customer Profiles domain
+  SourceEmail:
+    Type: String
+    Description: SES validated entity to be used as email sender.
+
+
+
+Resources:
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          -
+            Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns: 
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        -
+          PolicyName: ConnectAccess
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              -
+                Effect: Allow
+                Action:
+                  - connect:UpdateContactAttributes
+                  - connect:GetContactAttributes
+                  - connect:StartChatContact
+                  - connect:StartContactStreaming
+                  - connect:StartAttachedFileUpload
+                  - connect:UpdateContact
+                  - connect:UpdateContact
+                  - cases:GetCase
+                  - cases:SearchCases
+                  - cases:CreateCase
+                  - cases:CreateRelatedItem
+                  - profile:SearchProfiles
+                  - profile:UpdateProfile
+                  - profile:CreateProfile
+                  - profile:SearchProfiles
+
+                Resource: 
+                  - '*'
+        -
+          PolicyName: EncryptionAccess
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              -
+                Effect: Allow
+                Action:
+                  - kms:GenerateDataKey*
+                  - kms:Decrypt
+                Resource: 
+                  - '*'
+        -
+          PolicyName: EmailSending
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              -
+                Effect: Allow
+                Action:
+                  - ses:SendEmail
+                  - ses:SendRawEmail
+                Resource: 
+                  - '*'
+        -
+          PolicyName: BucketAccess
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              -
+                Effect: Allow
+                Action:
+                  - 's3:PutObject'
+                  - 's3:GetObject'
+                  - 's3:DeleteObject'
+                  - 's3:ListBucket'
+                Resource:
+                  - '*'                  
+  encryptionkey:
+    Type: AWS::KMS::Key
+    Properties: 
+      Description: Amazon Connect Email Access Key
+      Enabled: True
+      EnableKeyRotation: True
+      KeySpec: SYMMETRIC_DEFAULT
+      KeyPolicy:
+        Version: 2012-10-17
+        Statement:
+          - Sid: "Enable IAM User Permissions"
+            Effect: "Allow"
+            Principal: 
+              AWS:
+                Fn::Join: 
+                - ""
+                - 
+                  - "arn:aws:iam::"
+                  - Ref: "AWS::AccountId"
+                  - ":root"
+            Action: 'kms:*'
+            Resource: '*'
+          - Sid: "Enable Services Access"
+            Effect: "Allow"
+            Principal: 
+              Service:
+                - 'connect.amazonaws.com'
+                - 'ses.amazonaws.com'
+            Action:
+              - 'kms:GenerateDataKey*'
+              - 'kms:Decrypt'
+            Resource: '*'
+
+  ConnectEmailCasesDeps:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      ContentUri: Connect-Email-Layer/
+      CompatibleRuntimes:
+        - python3.11
+        - python3.10
+        - python3.9
+        - python3.8
+    Metadata:
+      BuildMethod: python3.9
+  
+  Receive:
+    Type: AWS::Serverless::Function 
+    Properties:
+      FunctionName: !Join ['-', [!Ref AWS::StackName,'EmailReception' ,!Select [4, !Split ['-', !Select [2, !Split ['/', !Ref AWS::StackId]]]]]]
+      Role: !GetAtt LambdaRole.Arn
+      CodeUri: Connect-Email-Case/
+      Handler: lambda_function.lambda_handler
+      Environment: 
+        Variables:
+          CASES_DOMAIN: !Ref CasesDomain
+          CASE_TEMPLATE: !Ref CaseTemplate
+          CONNECT_INSTANCE_ID: !Ref ConnectInstanceId
+          CUSTOMER_PROFILE_DOMAIN: !Ref CustomerProfilesDomain
+      Layers:
+      - !Ref ConnectEmailCasesDeps
+      Events:
+        LoadFileEvent:
+          Type: S3
+          Properties:
+            Bucket: !Ref emailBucket
+            Events: s3:ObjectCreated:*
+            Filter: 
+                S3Key: 
+                    Rules: 
+                      - Name: prefix
+                        Value: "incoming"
+
+  Reply:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Join ['-', [!Ref AWS::StackName,'Reply' ,!Select [4, !Split ['-', !Select [2, !Split ['/', !Ref AWS::StackId]]]]]]
+      Role: !GetAtt LambdaRole.Arn
+      CodeUri: Connect-Email-Reply/
+      Handler: lambda_function.lambda_handler
+      Environment:
+        Variables:
+          SOURCE_EMAIL: !Ref SourceEmail
+          CASES_DOMAIN: !Ref CasesDomain
+          CUSTOMER_PROFILE_DOMAIN: !Ref CustomerProfilesDomain
+
+  ConnectCaseUpdateEvent:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: Campaign launch trigger
+      EventPattern:
+        source:
+          - "aws.cases"
+        detail:
+          eventType:
+            - 'RELATED_ITEM.CREATED'
+      Name: !Join ['-', [!Ref AWS::StackName,'CaseCommentsUpdate' ,!Select [4, !Split ['-', !Select [2, !Split ['/', !Ref AWS::StackId]]]]]]
+      Targets: 
+        - Arn: !GetAtt Reply.Arn
+          Id: 'ConnectCaseCommentsEmailer'
+
+  emailBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Join ['-', ['emailbucket', !Select [4, !Split ['-', !Select [2, !Split ['/', !Ref AWS::StackId]]]]]]
+    DeletionPolicy: Delete
+
+  emailBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties: 
+      Bucket: !Ref emailBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: 'AllowSESPuts'
+            Action: 's3:PutObject'
+            Effect: Allow
+            Resource: !Join
+              - ''
+              - - 'arn:aws:s3:::'
+                - !Ref emailBucket
+                - /*
+            Principal:
+              Service: 'ses.amazonaws.com'
+            Condition:
+              StringEquals:
+                'AWS:SourceAccount': 
+                  !Ref AWS::AccountId
+                    
+  
+  ConnectRuleSet:
+    Type: AWS::SES::ReceiptRuleSet
+    Properties: 
+      RuleSetName: !Join ['-', ['email-connect', !Select [4, !Split ['-', !Select [2, !Split ['/', !Ref AWS::StackId]]]]]]
+    
+  S3Rule:
+    Type: AWS::SES::ReceiptRule
+    DependsOn: emailBucketPolicy
+    Properties:
+        RuleSetName: !Ref ConnectRuleSet
+        Rule:
+          Actions: 
+            - S3Action:
+                BucketName: !Ref emailBucket
+                ObjectKeyPrefix: 'incoming'
+          Enabled: True
+          Name: !Join ['-', ['s3storage', !Select [4, !Split ['-', !Select [2, !Split ['/', !Ref AWS::StackId]]]]]]
+          ScanEnabled: True
