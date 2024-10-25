@@ -76,13 +76,13 @@ def lambda_handler(event, context):
         else:
             print("Not multipart")
             try:
-                body = part.get_payload(decode=True)
+                body = msg.get_payload(decode=True)
                 msgBody += body.decode()
                 
             except Exception as err:
                 print(err)
                 print("Attempting decoding as latin1")
-                body = part.get_payload(decode=True).decode('latin1')
+                body = msg.get_payload(decode=True).decode('latin1')
                 msgBody += body
             
         response = search_customer_profile('_email',msgFrom)
