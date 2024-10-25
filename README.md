@@ -1,5 +1,5 @@
 # Amazon Connect Email Cases Integration
-This project contains source code and supporting files for supporting email integration as chat conversations. An SES ruleset is created to deliver emails to an S3 bucket, which in turn triggers a Lambda processing function to inject this messages to Amazon Connect in the form of cases. Cases are assigned to customer profiles with the from email address. If no customer profile is found, a new one is created.
+This project contains source code and supporting files for supporting email integration as chat conversations. An SES ruleset is created to deliver emails to an S3 bucket, which in turn triggers a Lambda processing function to inject this messages to Amazon Connect in the form of cases. Cases are assigned to customer profiles with the from email address. If no customer profile is found, a new one is created. Responses are sent based on case added comments (One email per commment).
 
 
 ## Deployed resources
@@ -9,6 +9,7 @@ The project includes a cloud formation template with a Serverless Application Mo
 ### AWS Lambda functions
 
 - Receive: Puts received emails on task queue as specified on environment variables.
+- Reply: Sends emails based on case updates.
 
 
 ## Prerequisites.
@@ -18,12 +19,14 @@ The project includes a cloud formation template with a Serverless Application Mo
 3. Routing profile on Amazon Connect Instance with chat enabled.
 4. AWS CLI and SAM tools installed and properly configured with administrator credentials.
 5. Verified domain in SES or the posibility to add records to public DNS zone.
+6. Amazon Connect Cases domain and Amazon Connect Customer Profiles domain configured.
+7. Cases publishing to Eventbridge according to: https://docs.aws.amazon.com/connect/latest/adminguide/case-event-streams-enable.html (No SQS is required)
 
 
 ## Deploy the solution
 1. Clone this repo.
 
-`git clone https://github.com/aws-samples/amazon-connect-email-cases-integration`
+`git clone https://github.com/aws-samples/email-to-case-integration-amazon-connect`
 
 2. Build the solution with SAM.
 
@@ -34,28 +37,25 @@ The project includes a cloud formation template with a Serverless Application Mo
 
 `sam deploy -g`
 
-SAM will ask for the name of the application (use "Connect-Email-Chat" or something similar) as all resources will be grouped under it; a deployment region and a confirmation prompt before deploying resources, enter y. SAM can save this information if you plan un doing changes, answer Y when prompted and accept the default environment and file name for the configuration.
+SAM will ask for the name of the application (use "Connect-Email-Cases" or something similar) as all resources will be grouped under it; the following parameters will also be prompted:
+- ConnectInstanceId: Insert the Amazon Connect InstanceID.
+- CasesDomain: ID for the associated cases domain.
+- CaseTemplate: Template for the case creation.
+- CustomerProfilesDomain: Domain for customer profiles. Noticed this is the domain name.
+- SourceEmail: Email to be used for email sending. Email reception must be configured separately.
+
+SAM can save this information if you plan un doing changes, answer Y when prompted and accept the default environment and file name for the configuration.
 
 4. If no email entity has been created, browse to the SES console,  and create a verified entity in SES. You'll need to verify domain ownership for the selected entity, this is done by adding entries to DNS resolution. Contact your DNS administrator to facilitate adding these records.
 
 5. In the SES console, browse to the Email receiving section and add any specific filters for receiving email on the created ruleset.
 
-6. Configure the **Amazon Connect Instance ID**  and the **Contact flow** details in the **Receive** function's environment variables.
-7. Configure the **Amazon Connect Instance ID** in the **Attach** function's environment variables.
-8. Configure the **Amazon Connect Bucket** (BUCKET, use only the bucket name) and the **Amazon Connect Chat storage prefix** (should be in the format: **connect/INSTANCE-NAME/Attachments/chat** ) and the SOURCE_EMAIL (the verified email identity used to send messages from SES) in the **Reply** function's environment variables. 
-
-
-8. Add the **Reply** function to the Amazon Connect contacflow list.
-
-
-9. Import the Visual-Mail contact flow for a Visual Step by Step Guide. Modify the associated Lambda function to the function created on the set up process.
-
-10. Create a contact flow to process chat conversations with a Set Event Flow configuring the Default Flow for Agent UI to the one created in the previous process (You can import the sample contact flow file and modify it accordingly.)
+6. On 
 
 ## Usage
-1. Agents enabled to receive chat conversations with the queue specified on the flow will receive email messages.
-2. Responses can be provided on the Visual Step by Step guide.
-3. Attachments can be added on the chat conversaton. No message is sent until the associated visual guide is completed.
+1. When receiving an email, a matching customer profile will be searched for using the email address.
+2. If a customer profile is found, a case will be created under this profile. If no profile is found, one will be created with only the associated email address.
+3. Case assignment rules can be defined within Amazon Connect to assign cases.
 
 ## Resource deletion
 1. From the cloudformation console, select the stack and click on Delete and confirm it by pressing Delete Stack. 
